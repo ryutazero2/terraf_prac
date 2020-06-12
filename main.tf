@@ -1,18 +1,19 @@
 provider "aws" {}
 
-resource "aws_vpc" "myVPC" {
+resource "aws_vpc" "my_vpc" {
   cidr_block           = "10.5.0.0/16"
   instance_tenancy     = "default"
   enable_dns_support   = "true"
   enable_dns_hostnames = "false"
   tags = {
-    Name = "myVPC"
+    Name = "my_vpc"
   }
 }
 
 resource "aws_subnet" "primary" {
-  vpc_id     = aws_vpc.myVPC.id
-  cidr_block = "10.5.1.0/24"
+  vpc_id            = aws_vpc.my_vpc.id
+  availability_zone = "ap-northeast-1a"
+  cidr_block        = "10.5.1.0/24"
 
   map_public_ip_on_launch = true
   tags = {
@@ -21,8 +22,9 @@ resource "aws_subnet" "primary" {
 }
 
 resource "aws_subnet" "secondary" {
-  vpc_id     = aws_vpc.myVPC.id
-  cidr_block = "10.5.2.0/24"
+  vpc_id            = aws_vpc.my_vpc.id
+  availability_zone = "ap-northeast-1d"
+  cidr_block        = "10.5.2.0/24"
 
   map_public_ip_on_launch = true
   tags = {
@@ -31,7 +33,7 @@ resource "aws_subnet" "secondary" {
 }
 
 resource "aws_internet_gateway" "gw" {
-  vpc_id = aws_vpc.myVPC.id
+  vpc_id = aws_vpc.my_vpc.id
 
   tags = {
     Name = "main"
@@ -39,7 +41,7 @@ resource "aws_internet_gateway" "gw" {
 }
 
 resource "aws_route_table" "public" {
-  vpc_id = aws_vpc.myVPC.id
+  vpc_id = aws_vpc.my_vpc.id
 }
 
 resource "aws_route" "public" {
@@ -61,7 +63,7 @@ resource "aws_route_table_association" "secondary-ass" {
 resource "aws_security_group" "alb2" {
   name        = "alb2"
   description = "alb to ec2"
-  vpc_id      = aws_vpc.myVPC.id
+  vpc_id      = aws_vpc.my_vpc.id
 
   ingress {
     description = "alb from VPC"
@@ -86,7 +88,7 @@ resource "aws_security_group" "alb2" {
 resource "aws_security_group" "web_server" {
   name        = "web_server"
   description = "Web"
-  vpc_id      = aws_vpc.myVPC.id
+  vpc_id      = aws_vpc.my_vpc.id
   egress {
     from_port   = 0
     to_port     = 0
@@ -120,7 +122,7 @@ resource "aws_security_group_rule" "inbound_alb" {
 resource "aws_security_group" "mysql" {
   name        = "mysql"
   description = "web to mysql"
-  vpc_id      = aws_vpc.myVPC.id
+  vpc_id      = aws_vpc.my_vpc.id
 
   egress {
     from_port   = 0
@@ -143,27 +145,72 @@ resource "aws_security_group_rule" "inbound_sql" {
   security_group_id        = aws_security_group.mysql.id
 }
 
-resource "aws_acm_certificate" "cert" {
-  domain_name       = "kekehashi.com"
-  validation_method = "DNS"
+resource "aws_lb_target_group" "ecs-group" {
+  name     = "ecs-group"
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = aws_vpc.my_vpc.id
+}
+
+resource "aws_lb" "alb" {
+  name               = "alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb2.id]
+  subnets            = [aws_subnet.primary.id, aws_subnet.secondary.id]
+
+  enable_deletion_protection = true
 
   tags = {
-    Environment = "test"
+    Environment = "production"
   }
+}
 
-  lifecycle {
-    create_before_destroy = true
+resource "aws_lb_listener" "httplis" {
+  load_balancer_arn = aws_lb.alb.arn
+  port              = "80"
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.ecs-group.arn
   }
 }
 
 
+resource "aws_route53_zone" "dns1" {
+  name = var.dns_1
+}
 
-data "aws_ami" "ubuntu" {
+resource "aws_route53_record" "alias_name" {
+  name    = var.dns_1
+  zone_id = aws_route53_zone.dns1.zone_id
+  type    = "A"
+
+  alias {
+    name                   = aws_lb.alb.dns_name
+    zone_id                = aws_lb.alb.zone_id
+    evaluate_target_health = true
+  }
+}
+
+data "aws_ami" "amalinu" {
   most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "architecture"
+    values = ["x86_64"]
+  }
+
+  filter {
+    name   = "root-device-type"
+    values = ["ebs"]
+  }
 
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-trusty-14.04-amd64-server-*"]
+    values = ["amzn2-ami-hvm-*"]
   }
 
   filter {
@@ -171,18 +218,25 @@ data "aws_ami" "ubuntu" {
     values = ["hvm"]
   }
 
-  owners = ["099720109477"] # Canonical
+  filter {
+    name   = "block-device-mapping.volume-type"
+    values = ["gp2"]
+  }
+
+  filter {
+    name   = "state"
+    values = ["available"]
+  }
 }
 
 resource "aws_instance" "web" {
-  ami                    = data.aws_ami.ubuntu.id
+  ami                    = data.aws_ami.amalinu.image_id
   instance_type          = "t2.micro"
   key_name               = aws_key_pair.deployer.key_name
   subnet_id              = aws_subnet.primary.id
-  vpc_security_group_ids = [aws_security_group.alb2.id]
-  #キーペア変えるときはvalueに既存のキーペアを指定する
+  vpc_security_group_ids = [aws_security_group.alb2.id, aws_security_group.mysql.id]
   tags = {
-    Name = "HelloWorld"
+    Name = "web"
   }
 }
 
@@ -230,9 +284,86 @@ resource "aws_ecr_repository" "app" {
   image_scanning_configuration {
     scan_on_push = true
   }
-
 }
 
 resource "aws_ecs_cluster" "ecs_cluster" {
   name = "ecs_cluster"
+}
+
+resource "aws_ecs_task_definition" "service" {
+  family                = "service"
+  container_definitions = <<TASK_DEFINITION
+  [
+        {
+        "cpu": 0,
+        "essential": true,
+        "image": "${aws_ecr_repository.web2.repository_url}",
+        "memory": 128,
+        "name": "web",
+        "portMappings": [
+            {
+                "containerPort": 80,
+                "hostPort": 80
+            }
+        ],
+        "mountPoints": [
+            {
+                  "containerPath": "/webapp/tmp/sockets/",
+                  "sourceVolume": "sockets"
+            }
+        ]
+    },
+    
+    {
+      "cpu": 0,
+      "essential": true,
+      "command": ["bundle","exec","puma","-C","config/puma.rb"],
+      "entryPoint": ["/webapp"],
+      "environment": [
+        { 
+          "name": "MYSQL_USER",
+          "value": "${var.username}"
+        },
+        {
+          "name": "MYSQL_PASSWORD",
+          "value": "${var.password}"
+        },
+        { 
+          "name": "MYSQL_HOST",
+          "value": "${aws_db_instance.mysql.address}"
+        }
+        ],
+      "image": "${aws_ecr_repository.app.repository_url}",
+      "memory": 128,
+      "name": "app",
+      "mountPoints": [
+          {
+          "containerPath": "/webapp/tmp/sockets/",
+          "sourceVolume": "sockets"
+          }
+      ]
+    }
+  ]
+  TASK_DEFINITION
+
+  volume {
+    name = "sockets"
+    docker_volume_configuration {
+      driver = "local"
+      scope  = "task"
+    }
+  }
+}
+
+resource "aws_ecs_service" "webapp" {
+  name            = "webapp"
+  cluster         = aws_ecs_cluster.ecs_cluster.id
+  task_definition = aws_ecs_task_definition.service.id
+  desired_count   = 2
+
+  load_balancer {
+    target_group_arn = aws_lb_target_group.ecs-group.id
+    container_name   = "web"
+    container_port   = 80
+  }
 }

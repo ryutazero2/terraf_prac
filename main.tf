@@ -194,55 +194,31 @@ resource "aws_route53_record" "alias_name" {
   }
 }
 
-data "aws_ami" "amalinu" {
+data "aws_ami" "ecs-ec2" {
   most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "architecture"
-    values = ["x86_64"]
-  }
-
-  filter {
-    name   = "root-device-type"
-    values = ["ebs"]
-  }
+  owners      = ["591542846629"]
 
   filter {
     name   = "name"
-    values = ["amzn2-ami-hvm-*"]
+    values = ["amzn2-ami-ecs-hvm-2.0.*"]
   }
 
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
-  }
-
-  filter {
-    name   = "block-device-mapping.volume-type"
-    values = ["gp2"]
-  }
-
-  filter {
-    name   = "state"
-    values = ["available"]
-  }
 }
 
-resource "aws_instance" "web" {
-  ami                    = data.aws_ami.amalinu.image_id
+resource "aws_instance" "ecs-task" {
+  ami                    = data.aws_ami.ecs-ec2.id
   instance_type          = "t2.micro"
-  key_name               = aws_key_pair.deployer.key_name
   subnet_id              = aws_subnet.primary.id
-  vpc_security_group_ids = [aws_security_group.alb2.id, aws_security_group.mysql.id]
+  iam_instance_profile   = "ecsInstanceRole"
+  key_name               = var.key_pair
+  vpc_security_group_ids = [aws_security_group.web_server.id, aws_security_group.mysql.id]
   tags = {
-    Name = "web"
+    Name = "ecstask"
   }
-}
-
-resource "aws_key_pair" "deployer" {
-  key_name   = "deployer-key"
-  public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQD3F6tyPEFEzV0LX3X8BsXdMsQz1x2cEikKDEY0aIj41qgxMCP/iteneqXSIFZBp5vizPvaoIR3Um9xK7PGoW8giupGn+EPuxIA4cDM4vzOqOkiMPhz5XK0whEjkVzTo4+S0puvDZuwIsdiW9mxhJc7tgBNL0cYlWSYVkz4G/fslNfRPW5mYAM49f4fhtxPb5ok4Q2Lg9dPKVHO/Bgeu5woMc7RY0p1ej6D4CKFE6lymSDJpW0YHX/wqE9+cfEauh7xZcG0q9t2ta6F6fmX0agvpFyZo8aFbXeUBr7osSCJNgvavWbM/06niWrOvYX2xwWdhXmXSrbX8ZbabVohBK41 email@example.com"
+  user_data = <<USERDATA
+    #!/bin/bash
+    sudo bash  -c "echo ECS_CLUSTER="${aws_ecs_cluster.ecs_cluster.name}" > /etc/ecs/ecs.config"
+    USERDATA
 }
 
 resource "aws_db_subnet_group" "db_subnet" {
@@ -318,7 +294,7 @@ resource "aws_ecs_task_definition" "service" {
       "cpu": 0,
       "essential": true,
       "command": ["bundle","exec","puma","-C","config/puma.rb"],
-      "entryPoint": ["/webapp"],
+      "workingDirectory": "/webapp",
       "environment": [
         { 
           "name": "MYSQL_USER",

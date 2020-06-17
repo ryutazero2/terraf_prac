@@ -268,59 +268,7 @@ resource "aws_ecs_cluster" "ecs_cluster" {
 
 resource "aws_ecs_task_definition" "service" {
   family                = "service"
-  container_definitions = <<TASK_DEFINITION
-  [
-        {
-        "cpu": 0,
-        "essential": true,
-        "image": "${aws_ecr_repository.web2.repository_url}",
-        "memory": 128,
-        "name": "web",
-        "portMappings": [
-            {
-                "containerPort": 80,
-                "hostPort": 80
-            }
-        ],
-        "mountPoints": [
-            {
-                  "containerPath": "/webapp/tmp/sockets/",
-                  "sourceVolume": "sockets"
-            }
-        ]
-    },
-    
-    {
-      "cpu": 0,
-      "essential": true,
-      "command": ["bundle","exec","puma","-C","config/puma.rb"],
-      "workingDirectory": "/webapp",
-      "environment": [
-        { 
-          "name": "MYSQL_USER",
-          "value": "${var.username}"
-        },
-        {
-          "name": "MYSQL_PASSWORD",
-          "value": "${var.password}"
-        },
-        { 
-          "name": "MYSQL_HOST",
-          "value": "${aws_db_instance.mysql.address}"
-        }
-        ],
-      "image": "${aws_ecr_repository.app.repository_url}",
-      "memory": 128,
-      "name": "app",
-      "mountPoints": [
-          {
-          "containerPath": "/webapp/tmp/sockets/",
-          "sourceVolume": "sockets"
-          }
-      ]
-    }
-  ]
-  TASK_DEFINITION
+  container_definitions = file("service.json")
 
   volume {
     name = "sockets"
